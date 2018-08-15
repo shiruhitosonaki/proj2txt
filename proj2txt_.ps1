@@ -1,3 +1,5 @@
+
+[CmdletBinding()]
 param
 (
   [Parameter (Mandatory=$false,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
@@ -5,19 +7,6 @@ param
 )
 begin
 {
-  $jobclass = @"
-    public class CustomJob {
-      public System.Management.Automation.PowerShell ps;
-      public System.IAsyncResult result;
-      public CustomJob(System.Management.Automation.PowerShell ps,
-                 System.IAsyncResult result)
-      {
-        this.ps = ps;
-        this.result = result;
-      }
-    }
-"@
-  Add-Type -TypeDefinition $jobclass -Language CSharp
   if (($null -eq $path) -or ($path.Length -eq 0) -or (-not (Test-Path $path)))
   {
     $p=".\"
@@ -37,6 +26,8 @@ begin
     )
     begin
     {
+      $isLeaf=$false
+      $i=New-Object System.Text.StringBuilder
     }
     process
     {
@@ -46,7 +37,12 @@ begin
         #{
         #  continue
         #}
-        $i=New-Object System.Text.StringBuilder
+        $i.Length=0
+     #   if ($isLeaf)
+    #    {
+    #      $l.RemoveLast()
+    #      $isLeaf=$false
+    #    }
         if ($x.Current.NodeType -ne [System.Xml.XPath.XPathNodeType]::Attribute)
         {
           if ($x.Current.NodeType -eq [System.Xml.XPath.XPathNodeType]::Comment)
@@ -78,26 +74,54 @@ begin
           $l.AddLast($i.ToString())
           if ($x.Current.MoveToParent())
           {
-            "back to the element node ({0}) ..." -f $x.Current.Name|Write-Output
+            "back to the element node ({0}) ..." -f $x.Current.Name|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
           }
         }
         if ($x.Current.MoveToFirstChild())
         {
+          "child of ({0}) ...{1}" -f @($x.Current.Name,$l.Last.Value)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
           &$abcdefg -x $x -l $l
+
+          "--child of ({0}) ...{1}" -f @($x.Current.Name,$l.Last.Value)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
         }
         else
         {
+          $i.Length=0
           $i.Append("{0}={1}" -f @($l.Last.Value,$(if ($x.Current.Value.Length -gt 0) {$x.Current.Value} else {"[null]"})))
           $l.RemoveLast()
           $l.AddLast($i.ToString())
           [System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+          "top...{0}" -f [System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+
+          if ($x.Current.NodeType -ne [System.Xml.XPath.XPathNodeType]::Comment)
+          {
+            if (($x.Current.Name -eq $null) -or ($x.Current.Name.Length -eq 0))
+            {
+              if ($x.Current.MoveToParent())
+              {
+                "++move to the parent node of ({0}) ..." -f $x.Current.Name|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+              }
+            }
+          }
           $l.RemoveLast()
+          $isLeaf=$true
         }
       }
       while ($x.Current.MoveToNext())
+   #   if ($l.Count -gt 0)
       if ($x.Current.MoveToParent())
       {
-        "move to the parent node ({0}) ..." -f $x.Current.Name|Write-Output
+      
+    #    if (-not $isLeaf)
+    #    {
+          $l.RemoveLast()
+          $isLeaf=$false
+    #    }
+    #    else
+    #    {
+    #      $isLeaf=$false
+    #    }
+        "move to the parent node of ({0}) ...{1}" -f @($x.Current.Name,$l.Count)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
       }
     }
     end
@@ -107,62 +131,25 @@ begin
 }
 process
 {
-  try
-  {
-    $pool=[System.Management.Automation.Runspaces.RunspacePool]([RunspaceFactory]::CreateRunspacePool(1, 3))
-    $pool.Open()
-    $jobs=New-Object System.Collections.ArrayList
-    foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"})
+  foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"}) {
+    try
     {
-      try
+      $l=New-Object System.Collections.Generic.LinkedList[System.String]
+      $l.Add("{0}," -f $i.FullName)
+      $x=([xml](Get-Content $i.FullName)).CreateNavigator().Select("/*")
+      if ($x.Current.MoveToFirstChild())
       {
-        $l=New-Object System.Collections.Generic.LinkedList[System.String]
-        $l.Add("{0}," -f $i.FullName)
-        $x=([xml](Get-Content $i.FullName)).CreateNavigator().Select("/*")
-        if ($x.Current.MoveToFirstChild())
-        {
-          $ps=[PowerShell]([PowerShell]::Create())
-          $ps.RunspacePool=$pool
-          $ps.AddScript($abcdefg).AddParameter("x",$x).AddParameter("l",$l).AddCommand("Write-Output")
-          $jobs.Add((New-Object CustomJob -ArgumentList @($ps,$ps.BeginInvoke())))
-        }
-      }
-      catch
-      {
-         $i|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
-         $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
+        &$abcdefg -x $x -l $l
       }
     }
-    $results=@()
-    do
+    catch
     {
-      $IsJobsCompleted=$true
-      foreach ($job in $jobs.ToArray())
-      {
-        if ($job.ps -ne $null)
-        {
-          if ($job.result.IsCompleted)
-          {
-            $results+=$job.ps.EndInvoke($job.result)
-            $job.ps.Dispose()
-            $jobs.Remove($job)
-          }
-          else
-          {
-            $IsJobsCompleted=$false
-          }
-        }
-      }
+       $i|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
+       $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
     }
-    while (-not $IsJobsCompleted)
-    $results|Out-GridView
-  }
-  catch
-  {
-    $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
   }
 }
 end
 {
-  "{0} finished ..." -f $scriptname|Write-Output
+  "{0} is terminated ..." -f $scriptname|Write-Output
 }
