@@ -1,3 +1,5 @@
+
+[CmdletBinding()]
 param
 (
   [Parameter (Mandatory=$false,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
@@ -5,19 +7,6 @@ param
 )
 begin
 {
-  $jobclass = @"
-    public class CustomJob {
-      public System.Management.Automation.PowerShell ps;
-      public System.IAsyncResult result;
-      public CustomJob(System.Management.Automation.PowerShell ps,
-                 System.IAsyncResult result)
-      {
-        this.ps = ps;
-        this.result = result;
-      }
-    }
-"@
-  Add-Type -TypeDefinition $jobclass -Language CSharp
   if (($null -eq $path) -or ($path.Length -eq 0) -or (-not (Test-Path $path)))
   {
     $p=".\"
@@ -37,67 +26,90 @@ begin
     )
     begin
     {
+      $hasSibling=$false
+      $i=New-Object System.Text.StringBuilder
     }
     process
     {
       do
       {
-        #if ($x.Current.NodeType -eq [System.Xml.XPath.XPathNodeType]::Comment)
-        #{
-        #  continue
-        #}
-        $i=New-Object System.Text.StringBuilder
-        if ($x.Current.NodeType -ne [System.Xml.XPath.XPathNodeType]::Attribute)
+        if ($hasSibling)
         {
-          if ($x.Current.NodeType -eq [System.Xml.XPath.XPathNodeType]::Comment)
+          $l.RemoveLast()
+          $hasSibling=$false
+        }
+        $i.Length=0
+        switch ($x.Current.NodeType.ToString())
+        {
+          ([System.Xml.XPath.XPathNodeType]::Element.ToString())
           {
-            $l.AddLast("#{0}" -f [System.Xml.XPath.XPathNodeType]::Comment)
-          }
-          else
-          {
-            if($x.Current.Name.Length -gt 0)
+            $i.Append("/{0}" -f $x.Current.Name)
+            if ($x.Current.MoveToFirstAttribute())
             {
-              $l.AddLast("/{0}" -f $x.Current.Name)
+              $ht=[ordered]@{}
+              do
+              {
+                $ht["@{0}" -f $x.Current.Name]=$x.Current.Value
+              }
+              while ($x.Current.MoveToNextAttribute())
+              foreach ($k in $ht.Keys)
+              {
+                $i.Append("{0}:{1}" -f @($k,$ht[$k]))
+              }
+              if ($x.Current.MoveToParent())
+              {
+                "back to the element node ({0}) ..." -f $x.Current.Name|Write-Output
+              }
             }
+            if ($x.Current.MoveToFirstChild())
+            {
+              "move to the child node ({0})" -f $x.Current.Name|Write-Output
+              $l.AddLast($i.ToString())
+              &$abcdefg -x $x -l $l
+            }
+            else
+            {
+              $i.Append(":=[null]")
+              $l.AddLast($i.ToString())
+              #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+              $hasSibling=$true
+            }
+            break
+          }
+          ([System.Xml.XPath.XPathNodeType]::Comment.ToString())
+          {
+            $l.AddLast("#Comment:={0}" -f $x.Current.Value)
+            #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+            $hasSibling=$true
+            break
+          }
+          ([System.Xml.Xpath.XpathNodeType]::Text.ToString())
+          {
+            $l.AddLast(":={0}" -f $x.Current.Value)
+            #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+            $hasSibling=$true
+            break
+          }
+          default
+          {
+            throw "found unexpected tag:{0}" -f $x.Current.NodeType.ToString()
           }
         }
-        if ($x.Current.MoveToFirstAttribute())
+        if ($hasSibling)
         {
-          $i.Append($l.Last.Value)
-          $l.RemoveLast()
-          $ht=[ordered]@{}
-          do
-          {
-            $ht["@{0}" -f $x.Current.Name]=$x.Current.Value
-          }
-          while ($x.Current.MoveToNextAttribute())
-          foreach ($k in $ht.Keys)
-          {
-            $i.Append("{0}:{1}" -f @($k,$ht[$k]))
-          }
-          $l.AddLast($i.ToString())
-          if ($x.Current.MoveToParent())
-          {
-            "back to the element node ({0}) ..." -f $x.Current.Name|Write-Output
-          }
-        }
-        if ($x.Current.MoveToFirstChild())
-        {
-          &$abcdefg -x $x -l $l
-        }
-        else
-        {
-          $i.Append("{0}={1}" -f @($l.Last.Value,$(if ($x.Current.Value.Length -gt 0) {$x.Current.Value} else {"[null]"})))
-          $l.RemoveLast()
-          $l.AddLast($i.ToString())
           [System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
-          $l.RemoveLast()
         }
       }
       while ($x.Current.MoveToNext())
       if ($x.Current.MoveToParent())
       {
-        "move to the parent node ({0}) ..." -f $x.Current.Name|Write-Output
+        "move to the parent node ({0})" -f $x.Current.Name|Write-Output
+        if ($hasSibling)
+        {
+          $l.RemoveLast()
+          $hasSibling=$false
+        }
+        $l.RemoveLast()
       }
     }
     end
@@ -107,62 +119,25 @@ begin
 }
 process
 {
-  try
-  {
-    $pool=[System.Management.Automation.Runspaces.RunspacePool]([RunspaceFactory]::CreateRunspacePool(1, 3))
-    $pool.Open()
-    $jobs=New-Object System.Collections.ArrayList
-    foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"})
+  foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"}) {
+    try
     {
-      try
+      $l=New-Object System.Collections.Generic.LinkedList[System.String]
+      $l.Add("{0}," -f $i.FullName)
+      $x=([xml](Get-Content $i.FullName)).CreateNavigator().Select("/*")
+      if ($x.Current.MoveToFirstChild())
       {
-        $l=New-Object System.Collections.Generic.LinkedList[System.String]
-        $l.Add("{0}," -f $i.FullName)
-        $x=([xml](Get-Content $i.FullName)).CreateNavigator().Select("/*")
-        if ($x.Current.MoveToFirstChild())
-        {
-          $ps=[PowerShell]([PowerShell]::Create())
-          $ps.RunspacePool=$pool
-          $ps.AddScript($abcdefg).AddParameter("x",$x).AddParameter("l",$l).AddCommand("Write-Output")
-          $jobs.Add((New-Object CustomJob -ArgumentList @($ps,$ps.BeginInvoke())))
-        }
-      }
-      catch
-      {
-         $i|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
-         $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
+        &$abcdefg -x $x -l $l
       }
     }
-    $results=@()
-    do
+    catch
     {
-      $IsJobsCompleted=$true
-      foreach ($job in $jobs.ToArray())
-      {
-        if ($job.ps -ne $null)
-        {
-          if ($job.result.IsCompleted)
-          {
-            $results+=$job.ps.EndInvoke($job.result)
-            $job.ps.Dispose()
-            $jobs.Remove($job)
-          }
-          else
-          {
-            $IsJobsCompleted=$false
-          }
-        }
-      }
+       $i|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
+       $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
     }
-    while (-not $IsJobsCompleted)
-    $results|Out-GridView
-  }
-  catch
-  {
-    $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
   }
 }
 end
 {
-  "{0} finished ..." -f $scriptname|Write-Output
+  "{0} is terminated ..." -f $scriptname|Write-Output
 }
