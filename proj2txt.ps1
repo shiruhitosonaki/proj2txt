@@ -14,20 +14,27 @@ begin
   }
   $scriptname=$MyInvocation.MyCommand.Name
   $now=Get-Date -Format "yyyyMMddHHmmss"
+  "{0} starts at {1}..." -f @($scriptname,$now)|Write-Output
   $abcdefg =
   {
     [CmdletBinding()]
     param
     (
-      [Parameter (Mandatory=$true,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true,Position=1)]
+      [Parameter (Mandatory=$true,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true,Position=0)]
       [System.Xml.XPath.XPathNodeIterator]$x,
+      [Parameter (Mandatory=$true,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true,Position=1)]
+      [System.Collections.Generic.LinkedList[System.String]]$l,
       [Parameter (Mandatory=$true,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true,Position=2)]
-      [System.Collections.Generic.LinkedList[System.String]]$l
+      [System.String]$o
     )
     begin
     {
+      if ($o.Length -eq 0)
+      {
+        $o=Get-Date -Format "yyyyMMddHHmmss"
+      }
       $hasSibling=$false
-      $i=New-Object System.Text.StringBuilder
+      $i=New-Object 'System.Text.StringBuilder'
     }
     process
     {
@@ -63,30 +70,30 @@ begin
             }
             if ($x.Current.MoveToFirstChild())
             {
-              "move to the child node ({0})" -f $x.Current.Name|Write-Output
+              "move to the first child node ({0})" -f $x.Current.Name|Write-Output
               $l.AddLast($i.ToString())
-              &$abcdefg -x $x -l $l
+              &$abcdefg -x $x -l $l -o $o
             }
             else
             {
-              $i.Append(":=[null]")
+              $i.Append("`t[null]")
               $l.AddLast($i.ToString())
-              #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+              #[System.String]::Join("",$l)|Out-File ("{0}.txt" -f $o) -Append
               $hasSibling=$true
             }
             break
           }
           ([System.Xml.XPath.XPathNodeType]::Comment.ToString())
           {
-            $l.AddLast("#Comment:={0}" -f $x.Current.Value)
-            #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+            $l.AddLast("#Comment`t{0}" -f ($x.Current.Value -replace "\s{2,}","[ws]"))
+            #[System.String]::Join("",$l)|Out-File ("{0}.txt" -f $o) -Append
             $hasSibling=$true
             break
           }
           ([System.Xml.Xpath.XpathNodeType]::Text.ToString())
           {
-            $l.AddLast(":={0}" -f $x.Current.Value)
-            #[System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+            $l.AddLast("`t{0}" -f ($x.Current.Value -replace "\s{2,}","[ws]"))
+            #[System.String]::Join("",$l)|Out-File ("{0}.txt" -f $o) -Append
             $hasSibling=$true
             break
           }
@@ -97,7 +104,7 @@ begin
         }
         if ($hasSibling)
         {
-          [System.String]::Join("",$l)|Out-File ("{0}_{1}.txt" -f @($Script:now,$Script:scriptname)) -Append
+          [System.String]::Join("",$l)|Out-File ("{0}.txt" -f $o) -Append
         }
       }
       while ($x.Current.MoveToNext())
@@ -119,25 +126,27 @@ begin
 }
 process
 {
-  foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"}) {
+  foreach ($i in Get-ChildItem $p -Recurse | Where-Object {$_.Extension -match ".*proj"})
+  {
     try
     {
-      $l=New-Object System.Collections.Generic.LinkedList[System.String]
-      $l.Add("{0}," -f $i.FullName)
+      $l=New-Object 'System.Collections.Generic.LinkedList[System.String]'
+      $l.Add("{0}`t" -f $i.FullName)
       $x=([xml](Get-Content $i.FullName)).CreateNavigator().Select("/*")
       if ($x.Current.MoveToFirstChild())
       {
-        &$abcdefg -x $x -l $l
+        $o="{0}_{1}" -f @($now, (($i.FullName -replace '^\w+:\\([\w|\W]+)$','$1') -replace '\\','_'))
+        &$abcdefg -x $x -l $l -o $o
       }
     }
     catch
     {
-       $i|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
-       $error[0]|Out-File ("{0}_{1}.err" -f @($now,$scriptname)) -Append
+       $i|Out-File ("{0}__{1}.err" -f @($now,$scriptname)) -Append
+       $error[0]|Out-File ("{0}__{1}.err" -f @($now,$scriptname)) -Append
     }
   }
 }
 end
 {
-  "{0} is terminated ..." -f $scriptname|Write-Output
+  "{0} terminated at {1}..." -f @($scriptname,(Get-Date -Format "yyyyMMddHHmmss"))|Write-Output
 }
